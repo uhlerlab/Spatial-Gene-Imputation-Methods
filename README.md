@@ -1,4 +1,4 @@
-# Run Gene Imputation Methods
+# SpaGIM: Spatial Gene Imputation Methods
 [![PyPI version](https://img.shields.io/pypi/v/spagim)](https://pypi.org/project/spagim/)
 [![Downloads](https://static.pepy.tech/badge/spagim)](https://pepy.tech/project/spagim)
 
