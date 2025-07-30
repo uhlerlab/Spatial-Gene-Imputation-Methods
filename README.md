@@ -42,17 +42,29 @@ adata_sc = sc.read_h5ad("path/to/your/single_cell_data")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 models = benchmark.Imputation(device=device, seed=42)
 
-# Run imputation
+# Run gene expression imputation using selected method
 adata_impute = models.forward(
-    adata_sc,
-    adata_sp,
-    # choose your method among ['Pearson','Spearman','Cosine','KNN','SpaGE','Harmony','Tangram','ENVI','GIMVI']
+    adata_sc,      # Single-cell reference dataset (AnnData object)
+    adata_sp,      # Spatial transcriptomics dataset (AnnData object)
+
+    # Select one of the imputation methods:
+    # 'Pearson', 'Spearman', 'Cosine'       → Similarity-based (correlation/distance)
+    # 'KNN'                                 → k-nearest neighbors averaging
+    # 'SpaGE', 'Harmony'                    → Integration-based methods
+    # 'Tangram'                             → Deep learning-based spatial mapping
+    # 'ENVI', 'GIMVI'                       → Probabilistic deep generative models
     method='Pearson',
-    # n_split is the number of splits for the data for ['Tangram','Pearson','Spearman','Cosine'] only
+
+    # Number of data splits (only used for: 'Tangram', 'Pearson', 'Spearman', 'Cosine')
+    # Use >1 for memory-efficient chunk-wise computation
     n_split=1,
-    # batch_size is the number of samples per gradient update, for 'GIMVI' only
+
+    # Batch size for gradient-based methods (used only by 'GIMVI')
+    # Controls memory usage and convergence speed during training
     batch_size=1024,
-    # k is the number of nearest neighbors for ['KNN','Pearson','Spearman','Cosine','Harmony'] only
+
+    # Number of nearest neighbors to use for similarity-based methods
+    # Applicable for: 'KNN', 'Pearson', 'Spearman', 'Cosine', 'Harmony'
     k=100
 )
 ```
