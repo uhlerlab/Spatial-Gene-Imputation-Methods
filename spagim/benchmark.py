@@ -1,4 +1,3 @@
-
 import random
 import time
 import numpy as np
@@ -34,6 +33,31 @@ class Imputation:
     def __init__(self, device='cpu', seed=0):
         self.device = device
         set_seed(seed)
+    
+    def forward(self, adata_sc, adata_sp, method='Pearson', n_split=1, batch_size=1024, k=100):
+        '''
+        Run imputation based on the method specified
+        '''
+        if method == 'Tangram':
+            return self.tangram(adata_sc, adata_sp, n_split=n_split)
+        elif method == 'GIMVI':
+            return self.gimvi(adata_sc, adata_sp, batch_size=batch_size)
+        elif method == 'Spearman':
+            return self.spearman(adata_sc, adata_sp, n_split=n_split, top_k=k)
+        elif method == 'Cosine':
+            return self.cosine_similarity(adata_sc, adata_sp, n_split=n_split, top_k=k)
+        elif method == 'Pearson':
+            return self.pearson(adata_sc, adata_sp, n_split=n_split, top_k=k)
+        elif method == 'KNN':
+            return self.knn(adata_sc, adata_sp, k=k)
+        elif method == 'ENVI':
+            return self.envi(adata_sc, adata_sp)
+        elif method == 'Harmony':
+            return self.harmony(adata_sc, adata_sp, k=k)
+        elif method == 'SpaGE':
+            return self.spage(adata_sc, adata_sp)
+        else:
+            raise ValueError(f"Method {method} is not supported.")
         
     def split_batches(self, data, n_split):
         '''
@@ -169,115 +193,6 @@ class Imputation:
         
         return adata_pred
 
-    def cosine_similarity_with_covariance(self, adata_sc, adata_sp, n_split=50, top_k=100, radius=100):
-        '''
-        Calculate cosine similarity, incorporating gene-gene covariance based on spatial proximity.
-        '''
-        
-        adata_sc_train = adata_sc[:, adata_sp.var_names]
-        data_st = adata_sp.X
-        data_sc = adata_sc_train.X
-
-        data_sc_tensor = torch.tensor(adata_sc.X, device=self.device, dtype=torch.float32)
-        data_sc_train_tensor = torch.tensor(data_sc, device=self.device, dtype=torch.float32)
-
-        # Initialize imputation tensor
-        imputation = torch.zeros(adata_sp.shape[0], adata_sc.shape[1], device='cpu')
-
-        # Get spatial coordinates of cells in adata_sp
-        spatial_coords = adata_sp.obsm['spatial']
-
-        # Create KDTree for fast spatial neighbor lookup (using all spatial coordinates)
-        tree = KDTree(spatial_coords)
-
-        # Find all neighbors for all cells at once (this is not batch-based)
-        all_neighbors_indices = tree.query_ball_point(spatial_coords, radius)
-
-        # Split data_st into batches for processing, but not for KNN
-        data_st_batches = self.split_batches(data_st, n_split)
-
-        # Normalize data_sc_tensor once for all batches (KNN doesn't depend on batch)
-        norm_sc = torch.clamp(torch.norm(data_sc_train_tensor, dim=1, keepdim=True), min=1e-8)
-        data_sc_normalized = data_sc_train_tensor / norm_sc
-
-        start_idx = 0
-        for batch_idx, data_st_batch in enumerate(data_st_batches):
-            print(f'Processing batch {batch_idx}')
-
-            batch_size = data_st_batch.shape[0]
-            data_st_tensor = torch.tensor(data_st_batch, device=self.device, dtype=torch.float32)
-
-            norm_st = torch.clamp(torch.norm(data_st_tensor, dim=1, keepdim=True), min=1e-8)
-            data_st_normalized = data_st_tensor / norm_st
-
-            # Calculate cosine similarity between the current batch and all sc cells (KNN across all data)
-            cosine_sim_batch = torch.matmul(data_st_normalized, data_sc_normalized.t())
-
-            # Use precomputed neighbors for the cells in the current batch
-            neighbors_indices = all_neighbors_indices[start_idx:start_idx + batch_size]
-
-            # Prepare tensor to hold covariance similarities for the batch
-            cov_sim_batch = torch.zeros_like(cosine_sim_batch, device=self.device)
-
-            # Batch calculate gene-gene covariance matrix similarity
-            for i, neighbor_idx in enumerate(neighbors_indices):
-                # Skip cells with no neighbors
-                if len(neighbor_idx) < 2:
-                    continue
-
-                # Get neighbor gene expression data for all neighbors of cell i
-                local_gene_data = torch.tensor(adata_sp.X[neighbor_idx], device=self.device, dtype=torch.float32)
-
-                # Check for NaN or inf values in the data
-                if torch.isnan(local_gene_data).any() or torch.isinf(local_gene_data).any():
-                    print(f"Skipping cell {i} due to NaN or inf in local gene data.")
-                    continue
-
-                # Compute gene-gene covariance matrix using torch
-                local_mean = torch.mean(local_gene_data, dim=0)
-                local_centered = local_gene_data - local_mean
-
-                # Check for zero variance in the data to prevent issues with covariance calculation
-                if torch.all(local_centered == 0):
-                    print(f"Skipping cell {i} due to zero variance in local gene data.")
-                    continue
-
-                # Compute covariance matrix
-                gene_cov_matrix = torch.matmul(local_centered.T, local_centered) / (local_centered.shape[0] - 1)
-
-                # Flatten and normalize the covariance matrix
-                cov_vector = gene_cov_matrix.flatten()
-                cov_norm = torch.clamp(torch.norm(cov_vector, keepdim=True), min=1e-8)
-                cov_vector_normalized = cov_vector / cov_norm
-
-                # Compute covariance similarity between cell i and all other cells (batch processing)
-                cov_sim_batch[i] = torch.matmul(cov_vector_normalized, cov_vector_normalized.T)
-
-            # Combine cosine similarity and covariance similarity
-            combined_similarity = cosine_sim_batch + cov_sim_batch
-
-            # Get top_k based on the combined similarity (KNN across all data)
-            top_k_values, top_k_indices = torch.topk(combined_similarity, top_k, dim=1)
-
-            # From data_sc_tensor, select the gene expression data of the top_k similar cells
-            selected_data_sc = data_sc_tensor[top_k_indices]
-
-            # Calculate weighted sum
-            weighted_sum = torch.einsum('ij,ijk->ik', top_k_values, selected_data_sc)
-
-            # Compute weighted average and store it in imputation tensor
-            imputation[start_idx:start_idx + batch_size] = (weighted_sum / torch.sum(top_k_values, dim=1, keepdim=True)).cpu()
-
-            # Update batch start index
-            start_idx += batch_size
-
-        # Convert imputation tensor to numpy and create AnnData object
-        imputation = imputation.numpy()
-        adata_pred = anndata.AnnData(X=imputation, obs=adata_sp.obs, var=adata_sc.var)
-        print(adata_pred.X.max())
-
-        return adata_pred
-    
     def cosine_similarity(self, adata_sc, adata_sp, n_split=50, top_k=100):
         '''
         Calculate cosine similarity and imputation directly inside the batch loop
