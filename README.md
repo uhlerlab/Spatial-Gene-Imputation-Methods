@@ -17,6 +17,11 @@ Install JAX via pip:
 pip install -U "jax[cuda12]"
 ```
 
+Install Harmony via pip:
+```bash
+pip install harmonypy
+```
+
 Install **spagim** via pip:
 
 ```bash
